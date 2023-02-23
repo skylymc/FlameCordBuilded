@@ -1,14 +1,14 @@
-From eff4044e14b781c1350fdd1a14727a4e7f191cf2 Mon Sep 17 00:00:00 2001
+From c2ca35b27ef725cf2ce710726aee0ea1efb84723 Mon Sep 17 00:00:00 2001
 From: xIsm4 <soportexism4@gmail.com>
 Date: Fri, 27 Jan 2023 14:12:44 +0100
 Subject: [PATCH] Implement libdeflate
 
 
 diff --git a/flamecord/src/main/java/dev/_2lstudios/flamecord/configuration/FlameCordConfiguration.java b/flamecord/src/main/java/dev/_2lstudios/flamecord/configuration/FlameCordConfiguration.java
-index 05f7da1d4..1ef7f6a72 100644
+index 6f463b9c6..6ec047ed7 100644
 --- a/flamecord/src/main/java/dev/_2lstudios/flamecord/configuration/FlameCordConfiguration.java
 +++ b/flamecord/src/main/java/dev/_2lstudios/flamecord/configuration/FlameCordConfiguration.java
-@@ -60,6 +60,8 @@ public class FlameCordConfiguration extends FlameConfig {
+@@ -59,6 +59,8 @@ public class FlameCordConfiguration extends FlameConfig {
      @Getter
      private int antibotFirewallExpire = 60;
      @Getter
@@ -17,14 +17,16 @@ index 05f7da1d4..1ef7f6a72 100644
      private boolean antibotFirewallLog = true;
      @Getter
      private boolean antibotFirewallIpset = true;
-@@ -318,6 +320,7 @@ public class FlameCordConfiguration extends FlameConfig {
-             this.fakePlayersMode = setIfUnexistant("custom-motd.fakeplayers.mode", this.fakePlayersMode, configuration);
+@@ -324,6 +326,9 @@ public class FlameCordConfiguration extends FlameConfig {
+         // FlameCord - Allow Invalid Names
+         this.allowInvalidNames = setIfUnexistant("allow-invalid-names", this.allowInvalidNames, configuration);
  
-             this.tcpFastOpen = setIfUnexistant("tcp-fast-open", this.tcpFastOpen, configuration);
-+            this.compressionLevel = setIfUnexistant("compression-level", this.compressionLevel, configuration);
- 
-             this.loggerInitialhandler = setIfUnexistant("logger.initialhandler", this.loggerInitialhandler, configuration);
-             this.loggerExceptions = setIfUnexistant("logger.exceptions", this.loggerExceptions, configuration);
++        // FlameCord - Implement libdeflate
++        this.compressionLevel = setIfUnexistant("compression-level", this.compressionLevel, configuration);
++
+         save(configuration, configurationFile);
+     }
+ }
 diff --git a/native/compile-linux.sh b/native/compile-linux.sh
 new file mode 100644
 index 000000000..5442dce9d
@@ -2270,7 +2272,7 @@ index 10fe411d8..f6daaea4d 100644
              <groupId>io.github.waterfallmc</groupId>
              <artifactId>waterfall-module-cmd-alert</artifactId>
 diff --git a/proxy/src/main/java/net/md_5/bungee/BungeeCord.java b/proxy/src/main/java/net/md_5/bungee/BungeeCord.java
-index d67519484..f7a3952a2 100644
+index f5059666e..dba21bcc7 100644
 --- a/proxy/src/main/java/net/md_5/bungee/BungeeCord.java
 +++ b/proxy/src/main/java/net/md_5/bungee/BungeeCord.java
 @@ -17,6 +17,7 @@ import dev._2lstudios.flamecord.commands.FlameCordCommand;
@@ -2307,23 +2309,23 @@ index d67519484..f7a3952a2 100644
  
      /**
 diff --git a/proxy/src/main/java/net/md_5/bungee/compress/PacketCompressor.java b/proxy/src/main/java/net/md_5/bungee/compress/PacketCompressor.java
-index d07cf4627..11c454c40 100644
+index d07cf4627..10cb0430c 100644
 --- a/proxy/src/main/java/net/md_5/bungee/compress/PacketCompressor.java
 +++ b/proxy/src/main/java/net/md_5/bungee/compress/PacketCompressor.java
-@@ -1,35 +1,36 @@
+@@ -1,45 +1,74 @@
  package net.md_5.bungee.compress;
  
++import java.util.zip.DataFormatException;
++
 +import dev._2lstudios.flamecord.natives.MoreByteBufUtils;
 +import dev._2lstudios.flamecord.natives.compress.Compressor;
  import io.netty.buffer.ByteBuf;
 +import io.netty.buffer.ByteBufAllocator;
  import io.netty.channel.ChannelHandlerContext;
  import io.netty.handler.codec.MessageToByteEncoder;
-+
-+import java.util.zip.DataFormatException;
- import java.util.zip.Deflater;
+-import java.util.zip.Deflater;
  import lombok.Setter;
- import net.md_5.bungee.jni.zlib.BungeeZlib;
+-import net.md_5.bungee.jni.zlib.BungeeZlib;
  import net.md_5.bungee.protocol.DefinedPacket;
  
 -public class PacketCompressor extends MessageToByteEncoder<ByteBuf>
@@ -2357,16 +2359,38 @@ index d07cf4627..11c454c40 100644
 -    {
 +    protected void encode(ChannelHandlerContext ctx, ByteBuf msg, ByteBuf out) throws Exception {
          int origSize = msg.readableBytes();
-         if ( origSize < threshold )
-         {
-@@ -39,7 +40,25 @@ public class PacketCompressor extends MessageToByteEncoder<ByteBuf>
-         {
-             DefinedPacket.writeVarInt( origSize, out );
- 
+-        if ( origSize < threshold )
+-        {
+-            DefinedPacket.writeVarInt( 0, out );
+-            out.writeBytes( msg );
+-        } else
+-        {
+-            DefinedPacket.writeVarInt( origSize, out );
+-
 -            zlib.process( msg, out );
-+            compressor.deflate( msg, out );
++        if (origSize < threshold) {
++            // Under the threshold, there is nothing to do.
++            DefinedPacket.writeVarInt(0, out);
++            out.writeBytes(msg);
++            return;
 +        }
-+    }
++
++        int uncompressed = msg.readableBytes();
++
++        DefinedPacket.writeVarInt(uncompressed, out);
++        ByteBuf compatibleIn = MoreByteBufUtils.ensureCompatible(ctx.alloc(), compressor, msg);
++
++        int startCompressed = out.writerIndex();
++        try {
++            compressor.deflate(compatibleIn, out);
++        } finally {
++            compatibleIn.release();
++        }
++        int compressedLength = out.writerIndex() - startCompressed;
++        if (compressedLength >= 1 << 21) {
++            throw new DataFormatException("The server sent a very large (over 2MiB compressed) packet.");
+         }
+     }
 +
 +    @Override
 +    protected ByteBuf allocateBuffer(ChannelHandlerContext ctx, ByteBuf msg, boolean preferDirect) throws Exception {
@@ -2379,12 +2403,12 @@ index d07cf4627..11c454c40 100644
 +            int finalBufferSize = uncompressed + 1;
 +            finalBufferSize += DefinedPacket.varIntBytes(finalBufferSize);
 +            return allocator.directBuffer(finalBufferSize);
-         }
++        }
 +
 +        // (maximum data length after compression) + packet length varint + uncompressed data varint
 +        int initialBufferSize = (uncompressed - 1) + 3 + DefinedPacket.varIntBytes(uncompressed);
 +        return allocator.directBuffer(initialBufferSize);
-     }
++    }
  }
 diff --git a/proxy/src/main/java/net/md_5/bungee/compress/PacketDecompressor.java b/proxy/src/main/java/net/md_5/bungee/compress/PacketDecompressor.java
 index eaedf4bc4..066bdafc8 100644
