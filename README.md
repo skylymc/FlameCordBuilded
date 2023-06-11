@@ -1,4 +1,4 @@
-# FlameCord
+# FlameCord for SkylyMc
 
 <a href="https://builtbybit.com/resources/flamecord-mitigate-bots-exploits.13492/" alt="Download">
     <img src="https://img.shields.io/badge/Download-%244.99-blue?style=flat-square" />
